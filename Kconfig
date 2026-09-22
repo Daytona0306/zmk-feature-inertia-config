@@ -1,0 +1,72 @@
+config ZMK_INERTIA_RUNTIME
+    bool "Inertia scroll runtime adjustment (DYA)"
+    help
+      mjmjm0101/zmk-input-processor-scroll-inertia (scroll_inertia_free)
+      friction / limit / decay-fast/slow/tail 等を custom-settings
+      経由で実行時に調整するための土台。
+      Phase2a (RAMのみ) では custom-settings 不要。
+      Phase2b (永続化) で ZMK_CUSTOM_SETTINGS が必要。
+      n のままなら mjm 素の DT 動作と同一 (完全ロールバック)。
+
+if ZMK_INERTIA_RUNTIME
+
+config ZMK_INERTIA_RUNTIME_STUDIO_RPC
+    bool "Inertia Studio RPC"
+    default y
+    depends on ZMK_STUDIO
+    help
+      DYA Studio から読み書きするための RPC。Phase3 で実装。
+
+# torabo-tsuki LP right.overlay の現値に合わせる。
+# DT seed が優先され、Kconfig は DT prop 無し時の fallback。
+config ZMK_INERTIA_FRICTION
+    int "friction default (permille)"
+    default 35
+    range 0 1000
+
+config ZMK_INERTIA_LIMIT
+    int "limit default (scroll units)"
+    default 900
+    range 1 4000
+
+config ZMK_INERTIA_DECAY_FAST
+    int "decay-fast default (permille/tick)"
+    default 992
+    range 800 999
+
+config ZMK_INERTIA_DECAY_SLOW
+    int "decay-slow default (permille/tick)"
+    default 980
+    range 800 999
+
+config ZMK_INERTIA_DECAY_TAIL
+    int "decay-tail default (permille/tick)"
+    default 975
+    range 800 999
+
+config ZMK_INERTIA_FAST
+    int "fast boundary default (scroll units)"
+    default 250
+    range 0 4000
+
+config ZMK_INERTIA_SLOW
+    int "slow boundary default (scroll units)"
+    default 60
+    range 0 4000
+
+config ZMK_INERTIA_START
+    int "start default (scroll units)"
+    default 40
+    range 1 2000
+
+config ZMK_INERTIA_MOVE
+    int "move default (scroll units)"
+    default 60
+    range 1 2000
+
+config ZMK_INERTIA_STOP
+    int "stop default (scroll units)"
+    default 1
+    range 1 500
+
+endif # ZMK_INERTIA_RUNTIME

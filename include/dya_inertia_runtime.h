@@ -21,7 +21,6 @@ struct dya_inertia_cfg {
     int32_t start;      /* 1..2000 */
     int32_t move;       /* 1..2000 */
     int32_t stop;       /* 1..500 */
-    int32_t enabled;    /* 0=off 1=on */
 };
 
 int dya_inertia_get(struct dya_inertia_cfg *out);
@@ -41,7 +40,6 @@ int dya_inertia_set_slow(int32_t v);
 int dya_inertia_set_start(int32_t v);
 int dya_inertia_set_move(int32_t v);
 int dya_inertia_set_stop(int32_t v);
-int dya_inertia_set_enabled(int32_t v);
 
 /* mjm input_processor_scroll_inertia.c から呼ばれる。
  * true で 10値を値コピー。false で dev->config に fallback

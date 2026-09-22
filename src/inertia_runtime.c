@@ -43,6 +43,7 @@ static void dya_inertia_commit_locked(void) {
 /* DT既定seed。prop無ければKconfig既定。
  * peripheral 等で node 無効でも落ちないよう EXISTS ガード。 */
 static void dya_inertia_seed_from_dt(void) {
+    s_staged.enabled = CONFIG_ZMK_INERTIA_ENABLED;
 #if DT_NODE_EXISTS(DYA_INERTIA_NODE)
 #if DT_NODE_HAS_PROP(DYA_INERTIA_NODE, friction)
     s_staged.friction = (int32_t)DT_PROP(DYA_INERTIA_NODE, friction);
@@ -95,6 +96,7 @@ static void dya_inertia_seed_from_dt(void) {
     s_staged.stop = CONFIG_ZMK_INERTIA_STOP;
 #endif
 #else
+    s_staged.enabled = CONFIG_ZMK_INERTIA_ENABLED;
     s_staged.friction = CONFIG_ZMK_INERTIA_FRICTION;
     s_staged.limit = CONFIG_ZMK_INERTIA_LIMIT;
     s_staged.decay_fast = CONFIG_ZMK_INERTIA_DECAY_FAST;
@@ -116,23 +118,31 @@ static void dya_inertia_seed_from_dt(void) {
 #define DYA_INERTIA_SUBSYS "dya__inertia"
 
 enum dya_inertia_field {
-    DYA_IN_FRICTION = 0,
-    DYA_IN_LIMIT = 1,
-    DYA_IN_DECAY_FAST = 2,
-    DYA_IN_DECAY_SLOW = 3,
-    DYA_IN_DECAY_TAIL = 4,
-    DYA_IN_FAST = 5,
-    DYA_IN_SLOW = 6,
-    DYA_IN_START = 7,
-    DYA_IN_MOVE = 8,
-    DYA_IN_STOP = 9,
-    DYA_IN_COUNT = 10,
+    DYA_IN_ENABLED = 0,
+    DYA_IN_FRICTION = 1,
+    DYA_IN_LIMIT = 2,
+    DYA_IN_DECAY_FAST = 3,
+    DYA_IN_DECAY_SLOW = 4,
+    DYA_IN_DECAY_TAIL = 5,
+    DYA_IN_FAST = 6,
+    DYA_IN_SLOW = 7,
+    DYA_IN_START = 8,
+    DYA_IN_MOVE = 9,
+    DYA_IN_STOP = 10,
+    DYA_IN_COUNT = 11,
 };
 
 static const char *const s_keys[DYA_IN_COUNT] = {
-    "friction", "limit", "decay_fast", "decay_slow", "decay_tail",
-    "fast",     "slow",  "start",      "move",       "stop",
+    "enabled", "friction", "limit", "decay_fast", "decay_slow", "decay_tail",
+    "fast",    "slow",     "start", "move",       "stop",
 };
+
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_enabled, DYA_INERTIA_SUBSYS, "enabled",
+    ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_ENABLED),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(0, 1));
 
 ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
     dya_in_friction, DYA_INERTIA_SUBSYS, "friction",
@@ -194,6 +204,8 @@ static struct zmk_custom_setting_value s_def_vals[DYA_IN_COUNT];
 
 static int32_t dya_inertia_staged_field(int field) {
     switch (field) {
+    case DYA_IN_ENABLED:
+        return s_staged.enabled;
     case DYA_IN_FRICTION:
         return s_staged.friction;
     case DYA_IN_LIMIT:
@@ -256,6 +268,12 @@ static int dya_inertia_apply_value(int field, int32_t v) {
         return -EINVAL;
     }
     switch (field) {
+    case DYA_IN_ENABLED:
+        if (v < 0 || v > 1) {
+            return -ERANGE;
+        }
+        s_staged.enabled = v;
+        break;
     case DYA_IN_FRICTION:
         if (v < 0 || v > 1000) {
             return -ERANGE;
@@ -400,6 +418,26 @@ const struct device *dya_inertia_dev(void) { return s_dev; }
 
 /* set_*: 先にstoreへMEMORY書込みし、成功時のみRAMへcommit。
  * custom-settings無効時はRAMのみ (Phase2a動作)。 */
+int dya_inertia_set_enabled(int32_t v) {
+    if (v < 0 || v > 1) {
+        return -ERANGE;
+    }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_ENABLED], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_ENABLED, v);
+#else
+    s_staged.enabled = v;
+    dya_inertia_commit_locked();
+    return 0;
+#endif
+}
+
 int dya_inertia_set_friction(int32_t v) {
     if (v < 0 || v > 1000) {
         return -ERANGE;
@@ -625,8 +663,8 @@ int dya_inertia_discard(void) {
 #endif
 }
 
-bool dya_inertia_resolve(const struct device *dev, int32_t *friction,
-                         int32_t *limit, int32_t *decay_fast,
+bool dya_inertia_resolve(const struct device *dev, int32_t *enabled,
+                         int32_t *friction, int32_t *limit, int32_t *decay_fast,
                          int32_t *decay_slow, int32_t *decay_tail,
                          int32_t *fast, int32_t *slow, int32_t *start,
                          int32_t *move, int32_t *stop) {
@@ -636,6 +674,9 @@ bool dya_inertia_resolve(const struct device *dev, int32_t *friction,
     unsigned int key = irq_lock();
     struct dya_inertia_cfg cur = s_live;
     irq_unlock(key);
+    if (enabled != NULL) {
+        *enabled = cur.enabled;
+    }
     if (friction != NULL) {
         *friction = cur.friction;
     }
@@ -682,12 +723,12 @@ static int dya_inertia_runtime_init(void) {
 #if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
     dya_inertia_install_defaults();
 #endif
-    LOG_INF("dya_inertia init: fric=%d lim=%d df=%d ds=%d dt=%d fast=%d slow=%d "
-            "start=%d move=%d stop=%d",
-            (int)s_live.friction, (int)s_live.limit, (int)s_live.decay_fast,
-            (int)s_live.decay_slow, (int)s_live.decay_tail, (int)s_live.fast,
-            (int)s_live.slow, (int)s_live.start, (int)s_live.move,
-            (int)s_live.stop);
+    LOG_INF("dya_inertia init: en=%d fric=%d lim=%d df=%d ds=%d dt=%d fast=%d "
+            "slow=%d start=%d move=%d stop=%d",
+            (int)s_live.enabled, (int)s_live.friction, (int)s_live.limit,
+            (int)s_live.decay_fast, (int)s_live.decay_slow,
+            (int)s_live.decay_tail, (int)s_live.fast, (int)s_live.slow,
+            (int)s_live.start, (int)s_live.move, (int)s_live.stop);
     return 0;
 }
 

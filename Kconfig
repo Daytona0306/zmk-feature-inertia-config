@@ -19,6 +19,10 @@ config ZMK_INERTIA_RUNTIME_STUDIO_RPC
 
 # torabo-tsuki LP right.overlay の現値に合わせる。
 # DT seed が優先され、Kconfig は DT prop 無し時の fallback。
+config ZMK_INERTIA_ENABLED
+    int "enabled default (0=off 1=on)"
+    default 1
+    range 0 1
 config ZMK_INERTIA_FRICTION
     int "friction default (permille)"
     default 35
@@ -68,5 +72,10 @@ config ZMK_INERTIA_STOP
     int "stop default (scroll units)"
     default 1
     range 1 500
+
+config ZMK_INERTIA_ENABLED
+    int "enabled default (0=off 1=on)"
+    default 1
+    range 0 1
 
 endif # ZMK_INERTIA_RUNTIME

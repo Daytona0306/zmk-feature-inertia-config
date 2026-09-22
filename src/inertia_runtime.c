@@ -133,16 +133,28 @@ enum dya_inertia_field {
 };
 
 static const char *const s_keys[DYA_IN_COUNT] = {
-    "enabled", "friction", "limit", "decay_fast", "decay_slow", "decay_tail",
+    "0_enabled", "friction", "limit", "decay_fast", "decay_slow", "decay_tail",
     "fast",    "slow",     "start", "move",       "stop",
 };
 
+/* enabled は Studio で先頭表示 (key辞書順) させるため 0_ 接頭辞。
+ * OPTIONS制約でドロップダウン表示 (ラベルで 0=無効/1=有効を明示)。 */
+static const struct zmk_custom_setting_value s_enabled_values[] = {
+    {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32, .int32_value = 0},
+    {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32, .int32_value = 1},
+};
+static const char *const s_enabled_labels[] = {"無効 (0)", "有効 (1)"};
+static const struct zmk_custom_setting_constraint s_enabled_constraint = {
+    .type = ZMK_CUSTOM_SETTING_CONSTRAINT_OPTIONS,
+    .options = {.values = s_enabled_values, .labels = s_enabled_labels, .count = 2},
+};
+
 ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
-    dya_in_enabled, DYA_INERTIA_SUBSYS, "enabled",
+    dya_in_enabled, DYA_INERTIA_SUBSYS, "0_enabled",
     ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
     ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_ENABLED),
     ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
-    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(0, 1));
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, s_enabled_constraint);
 
 ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
     dya_in_friction, DYA_INERTIA_SUBSYS, "friction",

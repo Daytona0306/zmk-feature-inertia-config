@@ -1,7 +1,5 @@
 /*
- * DYA inertia scroll runtime — Phase2a: hook + RAM のみ。
- * custom-settings 不要 (CONFIG_ZMK_CUSTOM_SETTINGS=n でもビルド可)。
- * Phase2b で DEFINE×10 + イベント購読 + 永続化を追加する。
+ * DYA inertia scroll runtime — Phase2b: hook + RAM + custom-settings永続化。
  *
  * 対象は scroll_inertia_free のみ (axis=0/layer=5)。
  * 他インスタンスは DT のまま。central 側のみ。
@@ -11,12 +9,19 @@
  * - CONFIG_ZMK_INERTIA_RUNTIME=n → 本ファイル自体ビルド除外、
  *   mjm 側 patch も #else 旧式のみで旧動作と同一。
  * - =y でも未書込み時は DT 実値を seed するため初動は同一。
+ * - CONFIG_ZMK_CUSTOM_SETTINGS=n でもビルド可 (Phase2a相当、永続化なし)。
  */
 
+#include <errno.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+#include <cormoran/zmk/custom_settings.h>
+#include <zmk/event_manager.h>
+#endif
 
 #include "dya_inertia_runtime.h"
 
@@ -104,6 +109,283 @@ static void dya_inertia_seed_from_dt(void) {
     s_live = s_staged;
 }
 
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+
+/* ---- Phase2b: custom-settings 登録・購読 ---- */
+
+#define DYA_INERTIA_SUBSYS "dya__inertia"
+
+enum dya_inertia_field {
+    DYA_IN_FRICTION = 0,
+    DYA_IN_LIMIT = 1,
+    DYA_IN_DECAY_FAST = 2,
+    DYA_IN_DECAY_SLOW = 3,
+    DYA_IN_DECAY_TAIL = 4,
+    DYA_IN_FAST = 5,
+    DYA_IN_SLOW = 6,
+    DYA_IN_START = 7,
+    DYA_IN_MOVE = 8,
+    DYA_IN_STOP = 9,
+    DYA_IN_COUNT = 10,
+};
+
+static const char *const s_keys[DYA_IN_COUNT] = {
+    "friction", "limit", "decay_fast", "decay_slow", "decay_tail",
+    "fast",     "slow",  "start",      "move",       "stop",
+};
+
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_friction, DYA_INERTIA_SUBSYS, "friction",
+    ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_FRICTION),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(0, 1000));
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_limit, DYA_INERTIA_SUBSYS, "limit", ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_LIMIT),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(1, 4000));
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_decay_fast, DYA_INERTIA_SUBSYS, "decay_fast",
+    ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_DECAY_FAST),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(800, 999));
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_decay_slow, DYA_INERTIA_SUBSYS, "decay_slow",
+    ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_DECAY_SLOW),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(800, 999));
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_decay_tail, DYA_INERTIA_SUBSYS, "decay_tail",
+    ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_DECAY_TAIL),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(800, 999));
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_fast, DYA_INERTIA_SUBSYS, "fast", ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_FAST),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(0, 4000));
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_slow, DYA_INERTIA_SUBSYS, "slow", ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_SLOW),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(0, 4000));
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_start, DYA_INERTIA_SUBSYS, "start", ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_START),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(1, 2000));
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_move, DYA_INERTIA_SUBSYS, "move", ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_MOVE),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(1, 2000));
+ZMK_CUSTOM_SETTING_DEFINE_WITH_CONSTRAINTS(
+    dya_in_stop, DYA_INERTIA_SUBSYS, "stop", ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+    ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_INERTIA_STOP),
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_RANGE_INT32(1, 500));
+
+/* set_default用既定値。ポインタ保持のみのため static/BSS常駐必須。 */
+static struct zmk_custom_setting_value s_def_vals[DYA_IN_COUNT];
+
+static int32_t dya_inertia_staged_field(int field) {
+    switch (field) {
+    case DYA_IN_FRICTION:
+        return s_staged.friction;
+    case DYA_IN_LIMIT:
+        return s_staged.limit;
+    case DYA_IN_DECAY_FAST:
+        return s_staged.decay_fast;
+    case DYA_IN_DECAY_SLOW:
+        return s_staged.decay_slow;
+    case DYA_IN_DECAY_TAIL:
+        return s_staged.decay_tail;
+    case DYA_IN_FAST:
+        return s_staged.fast;
+    case DYA_IN_SLOW:
+        return s_staged.slow;
+    case DYA_IN_START:
+        return s_staged.start;
+    case DYA_IN_MOVE:
+        return s_staged.move;
+    case DYA_IN_STOP:
+        return s_staged.stop;
+    default:
+        return 0;
+    }
+}
+
+static void dya_inertia_install_defaults(void) {
+    for (int field = 0; field < DYA_IN_COUNT; field++) {
+        s_def_vals[field].type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32;
+        s_def_vals[field].int32_value = dya_inertia_staged_field(field);
+        const struct zmk_custom_setting *st =
+            zmk_custom_setting_find(DYA_INERTIA_SUBSYS, s_keys[field]);
+        if (st == NULL) {
+            LOG_WRN("dya_inertia find %s failed", s_keys[field]);
+            continue;
+        }
+        int rc = zmk_custom_setting_set_default(st, &s_def_vals[field]);
+        if (rc < 0) {
+            LOG_WRN("dya_inertia set_default %s failed: %d", s_keys[field], rc);
+        }
+    }
+}
+
+static bool dya_inertia_lookup_key(const char *key, int *field_out) {
+    if (key == NULL) {
+        return false;
+    }
+    for (int field = 0; field < DYA_IN_COUNT; field++) {
+        if (strcmp(key, s_keys[field]) == 0) {
+            if (field_out != NULL) {
+                *field_out = field;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+static int dya_inertia_apply_value(int field, int32_t v) {
+    if (field < 0 || field >= DYA_IN_COUNT) {
+        return -EINVAL;
+    }
+    switch (field) {
+    case DYA_IN_FRICTION:
+        if (v < 0 || v > 1000) {
+            return -ERANGE;
+        }
+        s_staged.friction = v;
+        break;
+    case DYA_IN_LIMIT:
+        if (v < 1 || v > 4000) {
+            return -ERANGE;
+        }
+        s_staged.limit = v;
+        break;
+    case DYA_IN_DECAY_FAST:
+        if (v < 800 || v > 999) {
+            return -ERANGE;
+        }
+        s_staged.decay_fast = v;
+        break;
+    case DYA_IN_DECAY_SLOW:
+        if (v < 800 || v > 999) {
+            return -ERANGE;
+        }
+        s_staged.decay_slow = v;
+        break;
+    case DYA_IN_DECAY_TAIL:
+        if (v < 800 || v > 999) {
+            return -ERANGE;
+        }
+        s_staged.decay_tail = v;
+        break;
+    case DYA_IN_FAST:
+        if (v < 0 || v > 4000) {
+            return -ERANGE;
+        }
+        s_staged.fast = v;
+        break;
+    case DYA_IN_SLOW:
+        if (v < 0 || v > 4000) {
+            return -ERANGE;
+        }
+        s_staged.slow = v;
+        break;
+    case DYA_IN_START:
+        if (v < 1 || v > 2000) {
+            return -ERANGE;
+        }
+        s_staged.start = v;
+        break;
+    case DYA_IN_MOVE:
+        if (v < 1 || v > 2000) {
+            return -ERANGE;
+        }
+        s_staged.move = v;
+        break;
+    case DYA_IN_STOP:
+        if (v < 1 || v > 500) {
+            return -ERANGE;
+        }
+        s_staged.stop = v;
+        break;
+    default:
+        return -EINVAL;
+    }
+    dya_inertia_commit_locked();
+    return 0;
+}
+
+static void dya_inertia_reload_all(void) {
+    for (int field = 0; field < DYA_IN_COUNT; field++) {
+        struct zmk_custom_setting_value v;
+        int rc = zmk_custom_setting_read_by_key(DYA_INERTIA_SUBSYS, s_keys[field], &v);
+        if (rc < 0) {
+            LOG_WRN("dya_inertia reload %s read failed: %d", s_keys[field], rc);
+            continue;
+        }
+        if (v.type != ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32) {
+            LOG_WRN("dya_inertia reload %s bad type %d", s_keys[field], (int)v.type);
+            continue;
+        }
+        rc = dya_inertia_apply_value(field, v.int32_value);
+        if (rc < 0) {
+            LOG_WRN("dya_inertia reload %s out of range %d", s_keys[field],
+                    (int)v.int32_value);
+        }
+    }
+}
+
+static int dya_inertia_settings_listener(const zmk_event_t *eh) {
+    const struct zmk_custom_setting_changed *ch = as_zmk_custom_setting_changed(eh);
+    if (ch != NULL) {
+        if (ch->setting == NULL || ch->setting->key == NULL) {
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+        if (ch->setting->custom_subsystem_id == NULL ||
+            strcmp(ch->setting->custom_subsystem_id, DYA_INERTIA_SUBSYS) != 0) {
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+        int field = -1;
+        if (!dya_inertia_lookup_key(ch->setting->key, &field)) {
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+        struct zmk_custom_setting_value v;
+        if (zmk_custom_setting_read(ch->setting, &v) < 0) {
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+        if (v.type != ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32) {
+            return ZMK_EV_EVENT_BUBBLE;
+        }
+        int rc = dya_inertia_apply_value(field, v.int32_value);
+        if (rc < 0) {
+            LOG_WRN("dya_inertia apply %s=%d rejected: %d", ch->setting->key,
+                    (int)v.int32_value, rc);
+        }
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+    if (as_zmk_custom_settings_initialized(eh) != NULL) {
+        dya_inertia_reload_all();
+        LOG_INF("dya_inertia initialized: fric=%d lim=%d df=%d ds=%d dt=%d",
+                (int)s_live.friction, (int)s_live.limit, (int)s_live.decay_fast,
+                (int)s_live.decay_slow, (int)s_live.decay_tail);
+    }
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(dya_inertia_runtime, dya_inertia_settings_listener);
+ZMK_SUBSCRIPTION(dya_inertia_runtime, zmk_custom_setting_changed);
+ZMK_SUBSCRIPTION(dya_inertia_runtime, zmk_custom_settings_initialized);
+
+#endif /* IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS) */
+
 int dya_inertia_get(struct dya_inertia_cfg *out) {
     if (out == NULL) {
         return -EINVAL;
@@ -116,94 +398,231 @@ int dya_inertia_get(struct dya_inertia_cfg *out) {
 
 const struct device *dya_inertia_dev(void) { return s_dev; }
 
+/* set_*: 先にstoreへMEMORY書込みし、成功時のみRAMへcommit。
+ * custom-settings無効時はRAMのみ (Phase2a動作)。 */
 int dya_inertia_set_friction(int32_t v) {
     if (v < 0 || v > 1000) {
         return -ERANGE;
     }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_FRICTION], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_FRICTION, v);
+#else
     s_staged.friction = v;
     dya_inertia_commit_locked();
     return 0;
+#endif
 }
 
 int dya_inertia_set_limit(int32_t v) {
     if (v < 1 || v > 4000) {
         return -ERANGE;
     }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_LIMIT], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_LIMIT, v);
+#else
     s_staged.limit = v;
     dya_inertia_commit_locked();
     return 0;
+#endif
 }
 
 int dya_inertia_set_decay_fast(int32_t v) {
     if (v < 800 || v > 999) {
         return -ERANGE;
     }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_DECAY_FAST], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_DECAY_FAST, v);
+#else
     s_staged.decay_fast = v;
     dya_inertia_commit_locked();
     return 0;
+#endif
 }
 
 int dya_inertia_set_decay_slow(int32_t v) {
     if (v < 800 || v > 999) {
         return -ERANGE;
     }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_DECAY_SLOW], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_DECAY_SLOW, v);
+#else
     s_staged.decay_slow = v;
     dya_inertia_commit_locked();
     return 0;
+#endif
 }
 
 int dya_inertia_set_decay_tail(int32_t v) {
     if (v < 800 || v > 999) {
         return -ERANGE;
     }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_DECAY_TAIL], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_DECAY_TAIL, v);
+#else
     s_staged.decay_tail = v;
     dya_inertia_commit_locked();
     return 0;
+#endif
 }
 
 int dya_inertia_set_fast(int32_t v) {
     if (v < 0 || v > 4000) {
         return -ERANGE;
     }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_FAST], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_FAST, v);
+#else
     s_staged.fast = v;
     dya_inertia_commit_locked();
     return 0;
+#endif
 }
 
 int dya_inertia_set_slow(int32_t v) {
     if (v < 0 || v > 4000) {
         return -ERANGE;
     }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_SLOW], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_SLOW, v);
+#else
     s_staged.slow = v;
     dya_inertia_commit_locked();
     return 0;
+#endif
 }
 
 int dya_inertia_set_start(int32_t v) {
     if (v < 1 || v > 2000) {
         return -ERANGE;
     }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_START], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_START, v);
+#else
     s_staged.start = v;
     dya_inertia_commit_locked();
     return 0;
+#endif
 }
 
 int dya_inertia_set_move(int32_t v) {
     if (v < 1 || v > 2000) {
         return -ERANGE;
     }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_MOVE], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_MOVE, v);
+#else
     s_staged.move = v;
     dya_inertia_commit_locked();
     return 0;
+#endif
 }
 
 int dya_inertia_set_stop(int32_t v) {
     if (v < 1 || v > 500) {
         return -ERANGE;
     }
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    struct zmk_custom_setting_value sv = {.type = ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32,
+                                          .int32_value = v};
+    int rc = zmk_custom_setting_write_by_key(DYA_INERTIA_SUBSYS, s_keys[DYA_IN_STOP], &sv,
+                                             ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    if (rc < 0) {
+        return rc;
+    }
+    return dya_inertia_apply_value(DYA_IN_STOP, v);
+#else
     s_staged.stop = v;
     dya_inertia_commit_locked();
     return 0;
+#endif
+}
+
+int dya_inertia_save(void) {
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    uint32_t affected = 0;
+    int rc = zmk_custom_settings_save_scope(DYA_INERTIA_SUBSYS, NULL, NULL, &affected);
+    LOG_INF("dya_inertia save rc=%d affected=%u", rc, (unsigned int)affected);
+    return rc;
+#else
+    return -ENOSYS;
+#endif
+}
+
+int dya_inertia_discard(void) {
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    uint32_t affected = 0;
+    int rc = zmk_custom_settings_discard_scope(DYA_INERTIA_SUBSYS, NULL, NULL, &affected);
+    LOG_INF("dya_inertia discard rc=%d affected=%u", rc, (unsigned int)affected);
+    if (rc == 0) {
+        dya_inertia_reload_all();
+    }
+    return rc;
+#else
+    return -ENOSYS;
+#endif
 }
 
 bool dya_inertia_resolve(const struct device *dev, int32_t *friction,
@@ -260,6 +679,9 @@ static int dya_inertia_runtime_init(void) {
     s_dev = NULL;
 #endif
     dya_inertia_seed_from_dt();
+#if IS_ENABLED(CONFIG_ZMK_CUSTOM_SETTINGS)
+    dya_inertia_install_defaults();
+#endif
     LOG_INF("dya_inertia init: fric=%d lim=%d df=%d ds=%d dt=%d fast=%d slow=%d "
             "start=%d move=%d stop=%d",
             (int)s_live.friction, (int)s_live.limit, (int)s_live.decay_fast,

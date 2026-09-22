@@ -25,6 +25,9 @@ struct dya_inertia_cfg {
 int dya_inertia_get(struct dya_inertia_cfg *out);
 const struct device *dya_inertia_dev(void);
 
+/* 明示保存・破棄 (MEMORY運用の永続化口)。custom-settings無効時は -ENOSYS。 */
+int dya_inertia_save(void);
+int dya_inertia_discard(void);
 int dya_inertia_set_friction(int32_t v);
 int dya_inertia_set_limit(int32_t v);
 int dya_inertia_set_decay_fast(int32_t v);
